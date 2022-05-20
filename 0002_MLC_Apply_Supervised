@@ -1,0 +1,135 @@
+
+
+// Visualize initial data
+Map.addLayer(unsup,
+            {min: 1, max: 6, palette: ['green','red','cyan','yellow','pink','blue']},
+            'unsupervised clustered',
+            false);
+
+// Visualize data with forest, urban and water mask
+var unsup_masked = unsup.updateMask(unsup.gte(3).and(unsup.lte(5)));
+Map.addLayer(unsup_masked,
+            {min: 3, max: 5, palette: ['cyan','yellow','pink']},
+            'masked classes',
+            false);
+            
+// Map.addLayer(ee.Image().paint(iloilo_bdy, 0, 2), {palette:['red']}, "Iloilo Province", true);
+
+// Convert to an imagecollection
+var iloilo = ee.FeatureCollection(iloilo_bdy);
+Map.addLayer(iloilo, 0, 'iloilo');
+
+////==== CLASSIFICATION DATA ====?///
+
+/// INPUT DATA ================= ///
+var dry_decadal_comp = decadal_composites.bandNames().slice(0,38);
+var wet_decadal_comp = decadal_composites.bandNames().slice(36, 74);
+
+var dry_monthly_comp = monthly_composites.bandNames().slice(0,38);
+var wet_monthly_comp = monthly_composites.bandNames().slice(36, 74);
+
+
+var image = ee.Image([
+  wet, 
+  annual, 
+  // monthly_composites.select(wet_monthly_comp)
+  ]);//.updateMask(unsup.gte(3).and(unsup.lte(5)));
+print('Input Image Properties', image);
+Map.addLayer(image.select('GCVI_mean'), {
+  palette:['red','yellow','green']}, 'testOutput',
+  true);
+
+// Label of input data
+var label = 'class';
+
+// Load reference points from a data table.
+var points = points
+  // Convert 'areasqkm' property from string to number.
+  .map(function(feature){
+    var num = ee.Number.parse(feature.get('class'));
+    return feature.set('class', num);
+  });
+print('Reference Points Properties', points);
+
+/* ========
+TEST REMAPPING */
+
+points = points.remap([3,4,5],[4,4,5], 'class');
+print('Remapped Points Properties', points);
+
+/*========
+*/
+// Overlay the points on the imagery to get training.
+// stratifiedSample(numPoints, classBand, region, scale, projection, seed, classValues, classPoints, dropNulls, tileScale, geometries)
+// sample(region, scale, projection, factor, numPixels, seed, dropNulls, tileScale, geometries)
+
+var sample = image.sampleRegions({
+  collection: points,
+  properties: [label],
+  scale: 10
+});
+// var sample = image.stratifiedSample({
+//   region: points,
+//   //properties: [label],
+//   dropNulls: true,
+//   scale: 10
+// });
+
+Map.addLayer(points, {}, 'Reference Points');
+// The randomColumn() method will add a column of uniform random
+// numbers in a column named 'random' by default.
+var withRandom = sample.randomColumn({columnName: 'random', seed: 0});
+
+// We want to reserve some of the data for testing, to avoid overfitting the model.
+var split = 0.70;  // Roughly 70% training, 30% testing.
+var training = withRandom.filter(ee.Filter.lt('random', split));
+var validation = withRandom.filter(ee.Filter.gte('random', split));
+print('Training', training, 'Validation', validation)
+var bands = image.bandNames();
+
+// // Make a Random Forest classifier and train it.
+var classifier = ee.Classifier.smileRandomForest({
+  numberOfTrees: 200,
+  minLeafPopulation: 10,
+  seed: 0
+});
+
+classifier = classifier.train({
+      features: training,
+      classProperty: label,
+      inputProperties: bands
+    });
+
+// Classify the image with the same bands used for training.
+var classified = image.classify(classifier);
+
+// Classify the validation data.
+var validated = validation.classify(classifier);
+
+// Get a confusion matrix representing expected accuracy.
+var testAccuracy = validated.errorMatrix('class', 'classification');
+print('Validation error matrix: ', testAccuracy);
+print('Validation overall accuracy: ', testAccuracy.accuracy());
+print('Validation consumers accuracy: ', testAccuracy.consumersAccuracy());
+print('Validation producers accuracy: ', testAccuracy.producersAccuracy());
+print('Validation kappa: ', testAccuracy.kappa());
+
+print('smileRandomForest, explained', classifier.explain());
+
+// Display the inputs and the results.
+Map.centerObject(points, 11);
+Map.addLayer(classified.updateMask(unsup.gte(3).and(unsup.lte(5))),
+            {min: 3, max: 5, palette: ['cyan','yellow','pink']},
+            'classified random forest',
+            true);
+
+print('Classified Map', classified);
+
+Export.image.toDrive({
+  image: classified, 
+  description: 'classified_wet_v001', 
+  region: roi, 
+  scale: 10, 
+  maxPixels: 1e13, 
+  fileFormat: 'GeoTIFF', 
+});
