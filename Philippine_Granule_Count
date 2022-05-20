@@ -1,0 +1,59 @@
+// Import International Boundaries files
+var table = ee.FeatureCollection("USDOS/LSIB_SIMPLE/2017")
+              .filterMetadata('country_co', 'equals', 'RP');
+
+// print(table);
+
+Map.centerObject(table, 5);
+
+var S2 = ee.ImageCollection("COPERNICUS/S2")
+  .filterDate('2019-01-01', '2019-12-31')
+  .filterBounds(table);
+
+
+Map.addLayer(S2,null, 's2',false);
+
+var pal = [ '#000000',
+            '#ffffd4',
+            '#fee391',
+            '#fec44f',
+            '#fe9929',
+            '#d95f0e',
+            '#993404']
+
+// var pal2 = ["black,green,grey,yellow,blue,white,red"]
+
+var s2visParams = {bands: 'B1', 
+                    min: 0, 
+                    max: 205, 
+                    palette: pal}
+
+var s2Count = S2.count()
+
+print(s2Count);
+
+Map.addLayer(s2Count,
+  s2visParams,
+  's2_granules.count()'
+);
+
+// Select Philippine Extent
+Map.addLayer(table, null, 'LSIB', false);
+
+// Create an empty image into which to paint the features, cast to byte.
+var empty = ee.Image().byte();
+
+// Paint all the polygon edges with the same number and width, display.
+var outline = empty.paint({
+  featureCollection: table,
+  color: 1,
+  width: 1
+});
+Map.addLayer(outline, {palette: 'FF0000'}, 'edges');
+
+Export.image.toDrive({
+  image: s2Count,
+  region: table,
+  description: 's2Count_2019',
+  scale: 1000
+});
